@@ -120,19 +120,11 @@ async function populateAnnualReturnsTable(pvNumber) {
     
     // Add fetched data
     if (data && data.length > 0) {
-      data.forEach(item => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-          <td contenteditable="true">${item.year || ''}</td>
-          <td contenteditable="true">${item.formNo || ''}</td>
-        `;
-        tableBody.appendChild(row);
-      });
+      // Use dynamic row addition for database imports
+      const rowsToCreate = Math.max(data.length, 20); // Minimum 20 rows, or more if data exceeds
       
-      // Add empty rows to fill the table (up to 20 rows total)
-      const currentRows = data.length;
-      const totalRows = 20;
-      for (let i = currentRows; i < totalRows; i++) {
+      // Create all needed rows first
+      for (let i = 0; i < rowsToCreate; i++) {
         const row = document.createElement('tr');
         row.innerHTML = `
           <td contenteditable="true"></td>
@@ -140,8 +132,26 @@ async function populateAnnualReturnsTable(pvNumber) {
         `;
         tableBody.appendChild(row);
       }
+      
+      // Populate with actual data
+      data.forEach((item, index) => {
+        const row = tableBody.children[index];
+        if (row) {
+          row.children[0].textContent = item.year || '';
+          row.children[1].textContent = item.formNo || '';
+        }
+      });
+      
+      // Show notification if more than 20 rows were created
+      if (data.length > 20) {
+        showPasteNotification(`Imported ${data.length} annual returns from database (expanded table to accommodate data)`);
+      }
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+      
     } else {
-      // No data found - create empty rows
+      // No data found - create minimum 20 empty rows
       for (let i = 0; i < 20; i++) {
         const row = document.createElement('tr');
         row.innerHTML = `
@@ -178,9 +188,15 @@ async function populateCompanyData(companyName) {
     document.getElementById('incorporationDate').value = data.incorporationDate || '';
     document.getElementById('notes').value = data.notes || '';
     
-    // Populate Annual Returns table using the pvNumber
+    // Populate all tables using the pvNumber
     if (data.pvNumber) {
-      await populateAnnualReturnsTable(data.pvNumber);
+      await Promise.all([
+        populateAnnualReturnsTable(data.pvNumber),
+        populateDirectorsTable(data.pvNumber),
+        populateResolutionsTable(data.pvNumber),
+        populateShareholdersTable(data.pvNumber),
+        populateCompanyActionsTable(data.pvNumber)
+      ]);
     }
   } catch (err) {
     console.error('Error populating company data:', err);
@@ -311,22 +327,251 @@ document.addEventListener('paste', (e) => {
     const rows = Array.from(tbody.children);
     const currentRowIndex = rows.indexOf(currentRow);
     
-    // Paste each line into successive rows
-    lines.forEach((line, index) => {
-      const targetRowIndex = currentRowIndex + index;
-      if (targetRowIndex < rows.length) {
-        const targetRow = rows[targetRowIndex];
-        const targetCell = targetRow.children[currentCellIndex];
-        if (targetCell) {
-          targetCell.textContent = line.trim();
+    // Check if this is multi-column data (contains tabs)
+    const isMultiColumn = pastedText.includes('\t');
+    
+    if (isMultiColumn) {
+      // Multi-column paste - handle like Ctrl+V
+      // Ensure table has enough rows for pasted data
+      ensureTableCapacity(tbody, currentRowIndex, lines.length);
+      
+      // Refresh rows array after potentially adding new rows
+      const updatedRows = Array.from(tbody.children);
+      
+      // Calculate the maximum number of columns in the pasted data
+      const maxColumns = Math.max(...lines.map(line => line.split('\t').length));
+      
+      lines.forEach((line, lineIndex) => {
+        const cells = line.split('\t');
+        const targetRowIndex = currentRowIndex + lineIndex;
+        
+        if (targetRowIndex < updatedRows.length) {
+          const targetRow = updatedRows[targetRowIndex];
+          cells.forEach((cellValue, cellIndex) => {
+            const targetCellIndex = currentCellIndex + cellIndex;
+            if (targetCellIndex < targetRow.children.length) {
+              const targetCell = targetRow.children[targetCellIndex];
+              targetCell.textContent = cellValue.trim();
+            }
+          });
         }
+      });
+      
+      // Highlight the pasted cells briefly
+      const tableId = target.closest('table').id;
+      highlightPastedCells(currentRowIndex, currentCellIndex, lines.length, tableId);
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+      
+      // Show notification for multi-column paste
+      if (maxColumns > 1) {
+        showPasteNotification(`Pasted ${lines.length} rows with ${maxColumns} columns`);
       }
-    });
+      
+    } else {
+      // Single column multi-row paste
+      // Ensure table has enough rows for pasted data
+      ensureTableCapacity(tbody, currentRowIndex, lines.length);
+      
+      // Refresh rows array after potentially adding new rows
+      const updatedRows = Array.from(tbody.children);
+      
+      // Paste each line into successive rows
+      lines.forEach((line, index) => {
+        const targetRowIndex = currentRowIndex + index;
+        if (targetRowIndex < updatedRows.length) {
+          const targetRow = updatedRows[targetRowIndex];
+          const targetCell = targetRow.children[currentCellIndex];
+          if (targetCell) {
+            targetCell.textContent = line.trim();
+          }
+        }
+      });
+      
+      // Highlight the pasted cells briefly
+      const tableId2 = target.closest('table').id;
+      highlightPastedCells(currentRowIndex, currentCellIndex, lines.length, tableId2);
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+    }
+    
   } else {
     // Single line paste - just paste normally
     target.textContent = pastedText;
+    
+    // Update cell titles for truncated text
+    updateCellTitles();
   }
 });
+
+// Function to add more empty rows to the table
+function addMoreRows(tableId, count = 10) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!tbody) return;
+  
+  // Determine number of columns based on the first row (if it exists) or table header
+  const rows = Array.from(tbody.children);
+  const firstRow = rows[0];
+  let columnCount = 2; // Default to 2 columns
+  
+  if (firstRow) {
+    columnCount = firstRow.children.length;
+  } else {
+    // If no rows exist, check the table header
+    const table = tbody.closest('table');
+    const headerRow = table.querySelector('thead tr');
+    if (headerRow) {
+      columnCount = headerRow.children.length;
+    }
+  }
+  
+  for (let i = 0; i < count; i++) {
+    const newRow = document.createElement('tr');
+    const cells = [];
+    for (let j = 0; j < columnCount; j++) {
+      cells.push('<td contenteditable="true"></td>');
+    }
+    newRow.innerHTML = cells.join('');
+    tbody.appendChild(newRow);
+  }
+  
+  showPasteNotification(`Added ${count} more empty row${count > 1 ? 's' : ''} for manual entry`);
+}
+
+// Function to ensure table has enough rows for pasted data
+function ensureTableCapacity(tbody, startRowIndex, rowCount) {
+  const rows = Array.from(tbody.children);
+  const existingRows = rows.length;
+  const neededRows = startRowIndex + rowCount;
+  const rowsToAdd = Math.max(0, neededRows - existingRows);
+  
+  if (rowsToAdd > 0) {
+    // Determine number of columns based on the first row (if it exists) or table header
+    const firstRow = rows[0];
+    let columnCount = 2; // Default to 2 columns
+    
+    if (firstRow) {
+      columnCount = firstRow.children.length;
+    } else {
+      // If no rows exist, check the table header
+      const table = tbody.closest('table');
+      const headerRow = table.querySelector('thead tr');
+      if (headerRow) {
+        columnCount = headerRow.children.length;
+      }
+    }
+    
+    for (let i = 0; i < rowsToAdd; i++) {
+      const newRow = document.createElement('tr');
+      const cells = [];
+      for (let j = 0; j < columnCount; j++) {
+        cells.push('<td contenteditable="true"></td>');
+      }
+      newRow.innerHTML = cells.join('');
+      tbody.appendChild(newRow);
+    }
+    
+    // Show user feedback about added rows
+    showPasteNotification(`Added ${rowsToAdd} new row${rowsToAdd > 1 ? 's' : ''} to accommodate pasted data`);
+    return true; // Indicates rows were added
+  }
+  
+  return false; // No rows were added
+}
+
+// Function to show paste notification
+function showPasteNotification(message) {
+  // Remove existing notification if any
+  const existingNotification = document.querySelector('.paste-notification');
+  if (existingNotification) {
+    existingNotification.remove();
+  }
+  
+  // Create notification element
+  const notification = document.createElement('div');
+  notification.className = 'paste-notification';
+  notification.textContent = message;
+  notification.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: linear-gradient(90deg, #007aff 0%, #34c759 100%);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 10000;
+    font-size: 14px;
+    font-weight: 500;
+    animation: slideInRight 0.3s ease-out;
+  `;
+  
+  // Add animation keyframes
+  if (!document.querySelector('#paste-notification-styles')) {
+    const style = document.createElement('style');
+    style.id = 'paste-notification-styles';
+    style.textContent = `
+      @keyframes slideInRight {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes slideOutRight {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+  
+  document.body.appendChild(notification);
+  
+  // Auto-remove after 3 seconds
+  setTimeout(() => {
+    notification.style.animation = 'slideOutRight 0.3s ease-in';
+    setTimeout(() => {
+      if (notification.parentNode) {
+        notification.remove();
+      }
+    }, 300);
+  }, 3000);
+}
+
+// Function to highlight pasted cells briefly
+function highlightPastedCells(startRowIndex, startCellIndex, rowCount, tableId = 'annual-returns-table') {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!tbody) return;
+  
+  const rows = Array.from(tbody.children);
+  
+  // Add highlight class to pasted cells
+  for (let i = 0; i < rowCount; i++) {
+    const rowIndex = startRowIndex + i;
+    if (rowIndex < rows.length) {
+      const row = rows[rowIndex];
+      const cell = row.children[startCellIndex];
+      if (cell) {
+        cell.style.backgroundColor = '#007aff20';
+        cell.style.transition = 'background-color 0.3s ease';
+      }
+    }
+  }
+  
+  // Remove highlight after 2 seconds
+  setTimeout(() => {
+    for (let i = 0; i < rowCount; i++) {
+      const rowIndex = startRowIndex + i;
+      if (rowIndex < rows.length) {
+        const row = rows[rowIndex];
+        const cell = row.children[startCellIndex];
+        if (cell) {
+          cell.style.backgroundColor = '';
+        }
+      }
+    }
+  }, 2000);
+}
 // --- End Smart Paste ---
 
 // --- Excel-like Cell Selection and Editing ---
@@ -341,6 +586,12 @@ let isDragOperation = false;
 document.addEventListener('mousedown', (e) => {
   const cell = e.target.closest('td[contenteditable="true"]');
   if (!cell) return;
+  
+  // Check if clicking on resize handle
+  const rect = cell.getBoundingClientRect();
+  const isOnResizeHandle = e.clientX > rect.right - 4;
+  
+  if (isOnResizeHandle) return; // Let resize handler take over
   
   isSelecting = true;
   startCell = cell;
@@ -360,6 +611,9 @@ document.addEventListener('mousedown', (e) => {
 
 // Handle mouse move - drag selection
 document.addEventListener('mousemove', (e) => {
+  // Don't handle drag selection if we're resizing
+  if (isResizing) return;
+  
   if (!isSelecting || !startCell) return;
   
   const cell = e.target.closest('td[contenteditable="true"]');
@@ -409,6 +663,9 @@ document.addEventListener('mousemove', (e) => {
 
 // Handle mouse up - end selection
 document.addEventListener('mouseup', () => {
+  // Don't handle drag selection end if we're resizing
+  if (isResizing) return;
+  
   isSelecting = false;
   startCell = null;
 });
@@ -420,14 +677,27 @@ function clearAllSelections() {
   });
   selectedCell = null;
   selectedCells = [];
+  
+  // Clear any active text selection
+  window.getSelection().removeAllRanges();
+  
+  // Only blur if the active element is a table cell and not in edit mode
+  if (document.activeElement && 
+      document.activeElement.matches('td[contenteditable="true"]') && 
+      !document.activeElement.classList.contains('editing')) {
+    document.activeElement.blur();
+  }
 }
 
 // Handle single click - Excel behavior
 document.addEventListener('click', (e) => {
   const cell = e.target.closest('td[contenteditable="true"]');
   
-  // Always clear previous selections on single click
-  if (!isDragOperation) {
+  // Don't handle clicks if we're resizing
+  if (isResizing) return;
+  
+  // Only clear previous selections if clicking on a table cell
+  if (cell && !isDragOperation) {
     clearAllSelections();
   }
   
@@ -440,57 +710,153 @@ document.addEventListener('click', (e) => {
     selectedCells = [cell];
     
     if (cellText === '') {
-      // Empty cell - go directly to edit mode
+      // Empty cell - go directly to edit mode with overlay
       isEditMode = true;
-      cell.classList.add('editing');
-      cell.focus();
-      
-      // Place cursor at beginning
-      const range = document.createRange();
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      range.setStart(cell, 0);
-      range.collapse(true);
-      selection.addRange(range);
+      showCellEditorOverlay(cell);
     } else {
-      // Cell has content - select it
+      // Cell has content - select it (no edit mode, no cursor)
       isEditMode = false;
       cell.classList.add('selected-cell');
       
-      // Select all text
-      const range = document.createRange();
-      range.selectNodeContents(cell);
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
+      // Ensure no cursor or text selection is visible
+      window.getSelection().removeAllRanges();
       
-      // Remove focus to show selection highlight
-      cell.blur();
+      // Prevent focus to avoid cursor appearance
+      setTimeout(() => {
+        if (cell.classList.contains('selected-cell') && !cell.classList.contains('editing')) {
+          cell.blur();
+        }
+      }, 0);
     }
   }
 });
 
-// Handle double click - always enter edit mode
+// --- Excel-like Floating Overlay Editor ---
+let cellEditorOverlay = null;
+let editingCell = null;
+
+function getCellRectAndSpill(cell) {
+  // Get the bounding rect for the cell and how far it can spill right
+  const row = cell.parentElement;
+  const table = cell.closest('.data-table');
+  const allRows = Array.from(table.querySelectorAll('tbody tr'));
+  const colIndex = Array.from(row.children).indexOf(cell);
+  let maxSpillCols = 1;
+  
+  // Find how many rightward cells are empty in the current row
+  for (let i = colIndex + 1; i < row.children.length; i++) {
+    const rightCell = row.children[i];
+    if (rightCell && rightCell.textContent.trim() === '') {
+      maxSpillCols++;
+    } else {
+      break;
+    }
+  }
+  
+  // Calculate the total width for the overlay
+  let width = 0;
+  for (let i = colIndex; i < colIndex + maxSpillCols && i < row.children.length; i++) {
+    if (row.children[i]) {
+      width += row.children[i].offsetWidth;
+    }
+  }
+  
+  const rect = cell.getBoundingClientRect();
+  return { rect, width, maxSpillCols };
+}
+
+function showCellEditorOverlay(cell) {
+  if (cellEditorOverlay) cellEditorOverlay.remove();
+  editingCell = cell;
+  
+  const { rect, width, maxSpillCols } = getCellRectAndSpill(cell);
+  const scrollY = window.scrollY || document.documentElement.scrollTop;
+  const scrollX = window.scrollX || document.documentElement.scrollLeft;
+  
+  cellEditorOverlay = document.createElement('textarea');
+  cellEditorOverlay.className = 'cell-editor-overlay';
+  cellEditorOverlay.value = cell.textContent;
+  cellEditorOverlay.style.left = `${rect.left + scrollX}px`;
+  cellEditorOverlay.style.top = `${rect.top + scrollY}px`;
+  cellEditorOverlay.style.width = `${width - 4}px`; // Account for border
+  cellEditorOverlay.style.height = `${rect.height - 4}px`; // Account for border
+  cellEditorOverlay.style.fontSize = window.getComputedStyle(cell).fontSize;
+  cellEditorOverlay.style.fontFamily = window.getComputedStyle(cell).fontFamily;
+  cellEditorOverlay.style.color = window.getComputedStyle(cell).color;
+  cellEditorOverlay.style.background = window.getComputedStyle(cell).backgroundColor;
+  cellEditorOverlay.style.padding = '2px 4px';
+  cellEditorOverlay.style.boxSizing = 'border-box';
+  
+  document.body.appendChild(cellEditorOverlay);
+  cellEditorOverlay.focus();
+  cellEditorOverlay.setSelectionRange(cellEditorOverlay.value.length, cellEditorOverlay.value.length);
+
+  // Handle input: dynamically resize overlay width as needed
+  cellEditorOverlay.addEventListener('input', () => {
+    const { width: availableWidth } = getCellRectAndSpill(cell);
+    
+    // Calculate minimum width needed for the text
+    const tempSpan = document.createElement('span');
+    tempSpan.style.font = window.getComputedStyle(cellEditorOverlay).font;
+    tempSpan.style.visibility = 'hidden';
+    tempSpan.style.position = 'absolute';
+    tempSpan.style.whiteSpace = 'pre';
+    tempSpan.textContent = cellEditorOverlay.value;
+    document.body.appendChild(tempSpan);
+    const textWidth = tempSpan.offsetWidth;
+    document.body.removeChild(tempSpan);
+    
+    // Use the larger of available width or text width (with some padding)
+    const requiredWidth = Math.max(availableWidth, textWidth + 20);
+    cellEditorOverlay.style.width = `${requiredWidth - 4}px`;
+  });
+
+  // Handle blur/save
+  cellEditorOverlay.addEventListener('blur', () => {
+    cell.textContent = cellEditorOverlay.value;
+    cellEditorOverlay.remove();
+    cellEditorOverlay = null;
+    editingCell = null;
+    updateCellTitles();
+  });
+
+  // Handle Enter (save)
+  cellEditorOverlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      cellEditorOverlay.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cellEditorOverlay.remove();
+      cellEditorOverlay = null;
+      editingCell = null;
+    }
+  });
+}
+
+// Patch double-click handler to use overlay editor
 document.addEventListener('dblclick', (e) => {
   const cell = e.target.closest('td[contenteditable="true"]');
-  
+  if (isResizing) return;
   if (cell) {
     clearAllSelections();
     isEditMode = true;
     selectedCell = cell;
     selectedCells = [cell];
-    cell.classList.add('editing');
-    cell.focus();
-    
-    // Place cursor at click position
-    const range = document.createRange();
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    range.selectNodeContents(cell);
-    range.collapse(false);
-    selection.addRange(range);
+    showCellEditorOverlay(cell);
   }
 });
+
+// Patch Enter key to use overlay editor
+// (when a cell is selected but not in edit mode)
+document.addEventListener('keydown', (e) => {
+  if (editingCell || isEditMode) return;
+  if (e.key === 'Enter' && selectedCell && !isEditMode) {
+    e.preventDefault();
+    showCellEditorOverlay(selectedCell);
+  }
+});
+// --- End Excel-like Floating Overlay Editor ---
 
 // Arrow key navigation
 function navigateCell(direction) {
@@ -572,6 +938,11 @@ document.addEventListener('keydown', (e) => {
       selectedCells.forEach(cell => {
         cell.textContent = '';
       });
+      
+      // Show brief feedback for multiple cell deletion
+      if (selectedCells.length > 1) {
+        showPasteNotification(`Cleared ${selectedCells.length} selected cells`);
+      }
     }
   } else if (e.key === 'F2') {
     // F2 to edit (Excel standard)
@@ -683,28 +1054,50 @@ document.addEventListener('keydown', (e) => {
     navigator.clipboard.readText().then(text => {
       if (text.includes('\t') || text.includes('\n')) {
         // Multi-cell paste
-        const lines = text.split('\n');
+        const lines = text.split('\n').filter(line => line.trim() !== '');
         const currentRow = selectedCell.parentElement;
         const tbody = currentRow.parentElement;
         const rows = Array.from(tbody.children);
         const currentRowIndex = rows.indexOf(currentRow);
         const currentCellIndex = Array.from(currentRow.children).indexOf(selectedCell);
         
+        // Ensure table has enough rows for pasted data
+        ensureTableCapacity(tbody, currentRowIndex, lines.length);
+        
+        // Refresh rows array after potentially adding new rows
+        const updatedRows = Array.from(tbody.children);
+        
+        // Calculate the maximum number of columns in the pasted data
+        const maxColumns = Math.max(...lines.map(line => line.split('\t').length));
+        
         lines.forEach((line, lineIndex) => {
           const cells = line.split('\t');
           const targetRowIndex = currentRowIndex + lineIndex;
           
-          if (targetRowIndex < rows.length) {
-            const targetRow = rows[targetRowIndex];
+          if (targetRowIndex < updatedRows.length) {
+            const targetRow = updatedRows[targetRowIndex];
             cells.forEach((cellValue, cellIndex) => {
               const targetCellIndex = currentCellIndex + cellIndex;
               if (targetCellIndex < targetRow.children.length) {
                 const targetCell = targetRow.children[targetCellIndex];
-                targetCell.textContent = cellValue;
+                targetCell.textContent = cellValue.trim();
               }
             });
           }
         });
+        
+        // Highlight the pasted cells briefly
+        const tableId3 = selectedCell.closest('table').id;
+        highlightPastedCells(currentRowIndex, currentCellIndex, lines.length, tableId3);
+        
+        // Update cell titles for truncated text
+        updateCellTitles();
+        
+        // Show notification for multi-column paste
+        if (maxColumns > 1) {
+          showPasteNotification(`Pasted ${lines.length} rows with ${maxColumns} columns`);
+        }
+        
       } else {
         // Single cell paste
         selectedCell.textContent = text;
@@ -727,16 +1120,176 @@ document.addEventListener('keydown', (e) => {
 });
 // --- End Excel-like Cell Selection and Editing ---
 
-// --- Save Annual Returns Table ---
-document.querySelector('.edit-fields-form .save-btn').addEventListener('click', async (e) => {
+// --- Column Resizing Functionality ---
+let isResizing = false;
+let resizingColumn = null;
+let startX = 0;
+let startWidth = 0;
+
+// Handle mouse down on resize handle
+document.addEventListener('mousedown', (e) => {
+  const target = e.target;
+  const cell = target.closest('th, td');
+  
+  if (!cell) return;
+  
+  // Check if clicking on resize handle (right edge of cell)
+  const rect = cell.getBoundingClientRect();
+  const isOnResizeHandle = e.clientX > rect.right - 4;
+  
+  if (isOnResizeHandle) {
+    e.preventDefault();
+    isResizing = true;
+    resizingColumn = cell;
+    startX = e.clientX;
+    startWidth = cell.offsetWidth;
+    
+    // Add resizing class for visual feedback
+    cell.classList.add('resizing');
+  }
+});
+
+// Handle mouse move during resize
+document.addEventListener('mousemove', (e) => {
+  if (!isResizing || !resizingColumn) return;
+  
   e.preventDefault();
-  const pvNumber = document.getElementById('pvNumber').value;
+  
+  const deltaX = e.clientX - startX;
+  const newWidth = Math.max(80, Math.min(400, startWidth + deltaX));
+  
+  // Only update the width of the selected column
+  resizingColumn.style.width = `${newWidth}px`;
+});
+
+// Handle mouse up to end resize
+document.addEventListener('mouseup', () => {
+  if (isResizing && resizingColumn) {
+    // Remove resizing class from the column
+    resizingColumn.classList.remove('resizing');
+    
+    // Update cell titles after resize
+    updateCellTitles();
+    
+    isResizing = false;
+    resizingColumn = null;
+    startX = 0;
+    startWidth = 0;
+  }
+});
+
+// Prevent text selection during resize
+document.addEventListener('selectstart', (e) => {
+  if (isResizing) {
+    e.preventDefault();
+  }
+});
+// --- End Column Resizing ---
+
+
+
+// --- Save Company Details (Left Column) ---
+async function saveCompanyDetails() {
+  const pvNumber = document.getElementById('pvNumber').value.trim();
+  const companyName = document.getElementById('companyName').value.trim();
+  const previousName = document.getElementById('previousName').value.trim();
+  const registeredAddress = document.getElementById('registeredAddress').value.trim();
+  const incorporationDate = document.getElementById('incorporationDate').value;
+  const notes = document.getElementById('notes').value.trim();
+
+  // Validate required fields
   if (!pvNumber) {
-    alert('PV Number is required to save annual returns.');
+    alert('PV Number is required to save company details.');
     return;
   }
 
-  // Gather table data
+  if (!companyName) {
+    alert('Company Name is required to save company details.');
+    return;
+  }
+
+  try {
+    // Check if company already exists
+    const { data: existingCompany, error: checkError } = await supabase
+      .from('company_details')
+      .select('pvNumber')
+      .eq('pvNumber', pvNumber)
+      .single();
+
+    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows returned
+      throw new Error('Error checking existing company: ' + checkError.message);
+    }
+
+    const companyData = {
+      pvNumber,
+      companyName,
+      previousName,
+      registeredAddress,
+      incorporationDate,
+      notes
+    };
+
+    let result;
+    if (existingCompany) {
+      // Update existing company
+      result = await supabase
+        .from('company_details')
+        .update(companyData)
+        .eq('pvNumber', pvNumber);
+    } else {
+      // Insert new company
+      result = await supabase
+        .from('company_details')
+        .insert(companyData);
+    }
+
+    if (result.error) {
+      throw new Error('Error saving company details: ' + result.error.message);
+    }
+
+    showPasteNotification(existingCompany ? 'Company details updated successfully!' : 'Company details saved successfully!');
+    
+  } catch (error) {
+    alert('Error saving company details: ' + error.message);
+  }
+}
+
+// Add event listener to the save button for company details
+document.querySelector('.edit-fields-form .save-btn').addEventListener('click', async (e) => {
+  e.preventDefault();
+  
+  // Save company details first
+  await saveCompanyDetails();
+  
+  // Then save all tables
+  const pvNumber = document.getElementById('pvNumber').value;
+  if (!pvNumber) {
+    alert('PV Number is required to save table data.');
+    return;
+  }
+
+  try {
+    // Save all tables in parallel
+    await Promise.all([
+      saveAnnualReturnsTable(pvNumber),
+      saveDirectorsTable(pvNumber),
+      saveResolutionsTable(pvNumber),
+      saveShareholdersTable(pvNumber),
+      saveCompanyActionsTable(pvNumber)
+    ]);
+
+    showPasteNotification('All data saved successfully!');
+  } catch (error) {
+    alert('Error saving table data: ' + error.message);
+  }
+});
+
+
+// --- End Save Company Details ---
+
+// --- Save Table Functions ---
+// Save Annual Returns Table
+async function saveAnnualReturnsTable(pvNumber) {
   const tableRows = Array.from(document.querySelectorAll('#annual-returns-table tbody tr'));
   const tableData = tableRows
     .map(row => {
@@ -752,8 +1305,7 @@ document.querySelector('.edit-fields-form .save-btn').addEventListener('click', 
     .delete()
     .eq('pvNumber', pvNumber);
   if (delError) {
-    alert('Error deleting old annual returns: ' + delError.message);
-    return;
+    throw new Error('Error deleting old annual returns: ' + delError.message);
   }
 
   // Insert all table rows
@@ -763,13 +1315,442 @@ document.querySelector('.edit-fields-form .save-btn').addEventListener('click', 
       .from('annual_returns')
       .insert(insertRows);
     if (insError) {
-      alert('Error saving annual returns: ' + insError.message);
-      return;
+      throw new Error('Error saving annual returns: ' + insError.message);
     }
   }
+}
 
-  alert('Annual Returns saved successfully!');
-  // Optionally, refresh the table
-  await populateAnnualReturnsTable(pvNumber);
-});
-// --- End Save Annual Returns Table ---
+// Save Directors Table
+async function saveDirectorsTable(pvNumber) {
+  const tableRows = Array.from(document.querySelectorAll('#directors-table tbody tr'));
+  const tableData = tableRows
+    .map(row => {
+      const name = row.children[0].textContent.trim();
+      const nic = row.children[1].textContent.trim();
+      return { name, nic };
+    })
+    .filter(row => row.name); // Only rows with a name
+
+  // Overwrite: delete all existing for this pvNumber, then insert all from table
+  const { error: delError } = await supabase
+    .from('directors')
+    .delete()
+    .eq('pvNumber', pvNumber);
+  if (delError) {
+    throw new Error('Error deleting old directors: ' + delError.message);
+  }
+
+  // Insert all table rows
+  if (tableData.length > 0) {
+    const insertRows = tableData.map(row => ({ ...row, pvNumber }));
+    const { error: insError } = await supabase
+      .from('directors')
+      .insert(insertRows);
+    if (insError) {
+      throw new Error('Error saving directors: ' + insError.message);
+    }
+  }
+}
+
+// Save Resolutions Table
+async function saveResolutionsTable(pvNumber) {
+  const tableRows = Array.from(document.querySelectorAll('#resolutions-table tbody tr'));
+  const tableData = tableRows
+    .map(row => {
+      const date = row.children[0].textContent.trim();
+      const no = row.children[1].textContent.trim();
+      const details = row.children[2].textContent.trim();
+      return { date, no, details };
+    })
+    .filter(row => row.date || row.no || row.details); // Only rows with some data
+
+  // Overwrite: delete all existing for this pvNumber, then insert all from table
+  const { error: delError } = await supabase
+    .from('resolutions')
+    .delete()
+    .eq('pvNumber', pvNumber);
+  if (delError) {
+    throw new Error('Error deleting old resolutions: ' + delError.message);
+  }
+
+  // Insert all table rows
+  if (tableData.length > 0) {
+    const insertRows = tableData.map(row => ({ ...row, pvNumber }));
+    const { error: insError } = await supabase
+      .from('resolutions')
+      .insert(insertRows);
+    if (insError) {
+      throw new Error('Error saving resolutions: ' + insError.message);
+    }
+  }
+}
+
+// Save Shareholders Table
+async function saveShareholdersTable(pvNumber) {
+  const tableRows = Array.from(document.querySelectorAll('#shareholders-table tbody tr'));
+  const tableData = tableRows
+    .map(row => {
+      const name = row.children[0].textContent.trim();
+      const nic = row.children[1].textContent.trim();
+      return { name, nic };
+    })
+    .filter(row => row.name); // Only rows with a name
+
+  // Overwrite: delete all existing for this pvNumber, then insert all from table
+  const { error: delError } = await supabase
+    .from('shareholders')
+    .delete()
+    .eq('pvNumber', pvNumber);
+  if (delError) {
+    throw new Error('Error deleting old shareholders: ' + delError.message);
+  }
+
+  // Insert all table rows
+  if (tableData.length > 0) {
+    const insertRows = tableData.map(row => ({ ...row, pvNumber }));
+    const { error: insError } = await supabase
+      .from('shareholders')
+      .insert(insertRows);
+    if (insError) {
+      throw new Error('Error saving shareholders: ' + insError.message);
+    }
+  }
+}
+
+// Save Company Actions Table
+async function saveCompanyActionsTable(pvNumber) {
+  const tableRows = Array.from(document.querySelectorAll('#company-actions-table tbody tr'));
+  const tableData = tableRows
+    .map(row => {
+      const date = row.children[0].textContent.trim();
+      const action = row.children[1].textContent.trim();
+      const details = row.children[2].textContent.trim();
+      return { date, action, details };
+    })
+    .filter(row => row.date || row.action || row.details); // Only rows with some data
+
+  // Overwrite: delete all existing for this pvNumber, then insert all from table
+  const { error: delError } = await supabase
+    .from('company_actions')
+    .delete()
+    .eq('pvNumber', pvNumber);
+  if (delError) {
+    throw new Error('Error deleting old company actions: ' + delError.message);
+  }
+
+  // Insert all table rows
+  if (tableData.length > 0) {
+    const insertRows = tableData.map(row => ({ ...row, pvNumber }));
+    const { error: insError } = await supabase
+      .from('company_actions')
+      .insert(insertRows);
+    if (insError) {
+      throw new Error('Error saving company actions: ' + insError.message);
+    }
+  }
+}
+// --- End Save Table Functions ---
+
+// Function to reset column widths to default
+function resetColumnWidths(tableId) {
+  const table = document.querySelector(`#${tableId}`);
+  if (!table) return;
+  
+  const cells = table.querySelectorAll('th, td');
+  cells.forEach(cell => {
+    cell.style.width = '';
+    cell.style.minWidth = '';
+    cell.style.maxWidth = '';
+  });
+  
+  updateCellTitles();
+}
+
+// Function to update cell titles for truncated text
+function updateCellTitles() {
+  const cells = document.querySelectorAll('td[contenteditable="true"]');
+  cells.forEach(cell => {
+    const text = cell.textContent;
+    const isTruncated = cell.scrollWidth > cell.clientWidth;
+    
+    if (isTruncated && text.trim()) {
+      cell.setAttribute('title', text);
+    } else {
+      cell.removeAttribute('title');
+    }
+  });
+}
+
+// Function to populate Directors table
+async function populateDirectorsTable(pvNumber) {
+  try {
+    const { data, error } = await supabase
+      .from('directors')
+      .select('name, nic')
+      .eq('pvNumber', pvNumber)
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching directors:', error);
+      return;
+    }
+
+    const tableBody = document.querySelector('#directors-table tbody');
+    
+    // Clear existing data
+    tableBody.innerHTML = '';
+    
+    // Add fetched data
+    if (data && data.length > 0) {
+      // Use dynamic row addition for database imports
+      const rowsToCreate = Math.max(data.length, 20); // Minimum 20 rows, or more if data exceeds
+      
+      // Create all needed rows first
+      for (let i = 0; i < rowsToCreate; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+      
+      // Populate with actual data
+      data.forEach((item, index) => {
+        const row = tableBody.children[index];
+        if (row) {
+          row.children[0].textContent = item.name || '';
+          row.children[1].textContent = item.nic || '';
+        }
+      });
+      
+      // Show notification if more than 20 rows were created
+      if (data.length > 20) {
+        showPasteNotification(`Imported ${data.length} directors from database (expanded table to accommodate data)`);
+      }
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+      
+    } else {
+      // No data found - create minimum 20 empty rows
+      for (let i = 0; i < 20; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+    }
+  } catch (err) {
+    console.error('Error populating directors table:', err);
+  }
+}
+
+// Function to populate Resolutions table
+async function populateResolutionsTable(pvNumber) {
+  try {
+    const { data, error } = await supabase
+      .from('resolutions')
+      .select('date, no, details')
+      .eq('pvNumber', pvNumber)
+      .order('date', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching resolutions:', error);
+      return;
+    }
+
+    const tableBody = document.querySelector('#resolutions-table tbody');
+    
+    // Clear existing data
+    tableBody.innerHTML = '';
+    
+    // Add fetched data
+    if (data && data.length > 0) {
+      // Use dynamic row addition for database imports
+      const rowsToCreate = Math.max(data.length, 20); // Minimum 20 rows, or more if data exceeds
+      
+      // Create all needed rows first
+      for (let i = 0; i < rowsToCreate; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+      
+      // Populate with actual data
+      data.forEach((item, index) => {
+        const row = tableBody.children[index];
+        if (row) {
+          row.children[0].textContent = item.date || '';
+          row.children[1].textContent = item.no || '';
+          row.children[2].textContent = item.details || '';
+        }
+      });
+      
+      // Show notification if more than 20 rows were created
+      if (data.length > 20) {
+        showPasteNotification(`Imported ${data.length} resolutions from database (expanded table to accommodate data)`);
+      }
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+      
+    } else {
+      // No data found - create minimum 20 empty rows
+      for (let i = 0; i < 20; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+    }
+  } catch (err) {
+    console.error('Error populating resolutions table:', err);
+  }
+}
+
+// Function to populate Shareholders table
+async function populateShareholdersTable(pvNumber) {
+  try {
+    const { data, error } = await supabase
+      .from('shareholders')
+      .select('name, nic')
+      .eq('pvNumber', pvNumber)
+      .order('name');
+    
+    if (error) {
+      console.error('Error fetching shareholders:', error);
+      return;
+    }
+
+    const tableBody = document.querySelector('#shareholders-table tbody');
+    
+    // Clear existing data
+    tableBody.innerHTML = '';
+    
+    // Add fetched data
+    if (data && data.length > 0) {
+      // Use dynamic row addition for database imports
+      const rowsToCreate = Math.max(data.length, 20); // Minimum 20 rows, or more if data exceeds
+      
+      // Create all needed rows first
+      for (let i = 0; i < rowsToCreate; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+      
+      // Populate with actual data
+      data.forEach((item, index) => {
+        const row = tableBody.children[index];
+        if (row) {
+          row.children[0].textContent = item.name || '';
+          row.children[1].textContent = item.nic || '';
+        }
+      });
+      
+      // Show notification if more than 20 rows were created
+      if (data.length > 20) {
+        showPasteNotification(`Imported ${data.length} shareholders from database (expanded table to accommodate data)`);
+      }
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+      
+    } else {
+      // No data found - create minimum 20 empty rows
+      for (let i = 0; i < 20; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+    }
+  } catch (err) {
+    console.error('Error populating shareholders table:', err);
+  }
+}
+
+// Function to populate Company Actions table
+async function populateCompanyActionsTable(pvNumber) {
+  try {
+    const { data, error } = await supabase
+      .from('company_actions')
+      .select('date, action, details')
+      .eq('pvNumber', pvNumber)
+      .order('date', { ascending: false });
+    
+    if (error) {
+      console.error('Error fetching company actions:', error);
+      return;
+    }
+
+    const tableBody = document.querySelector('#company-actions-table tbody');
+    
+    // Clear existing data
+    tableBody.innerHTML = '';
+    
+    // Add fetched data
+    if (data && data.length > 0) {
+      // Use dynamic row addition for database imports
+      const rowsToCreate = Math.max(data.length, 20); // Minimum 20 rows, or more if data exceeds
+      
+      // Create all needed rows first
+      for (let i = 0; i < rowsToCreate; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+      
+      // Populate with actual data
+      data.forEach((item, index) => {
+        const row = tableBody.children[index];
+        if (row) {
+          row.children[0].textContent = item.date || '';
+          row.children[1].textContent = item.action || '';
+          row.children[2].textContent = item.details || '';
+        }
+      });
+      
+      // Show notification if more than 20 rows were created
+      if (data.length > 20) {
+        showPasteNotification(`Imported ${data.length} company actions from database (expanded table to accommodate data)`);
+      }
+      
+      // Update cell titles for truncated text
+      updateCellTitles();
+      
+    } else {
+      // No data found - create minimum 20 empty rows
+      for (let i = 0; i < 20; i++) {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+          <td contenteditable="true"></td>
+        `;
+        tableBody.appendChild(row);
+      }
+    }
+  } catch (err) {
+    console.error('Error populating company actions table:', err);
+  }
+}
